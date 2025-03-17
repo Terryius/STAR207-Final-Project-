@@ -1,0 +1,599 @@
+---
+title: "STA 207 Final Report"
+author: "Changhyun Lee"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    df_print: paged
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    number_sections: true
+    fig_caption: true
+    highlight: tango
+    mathjax: default
+    css: styles.css
+geometry: margin=1in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,     
+  message = FALSE,  
+  warning = FALSE 
+)
+```
+
+
+***
+
+# Abstract
+This report analyzes data from Project STAR and our goal is to evaluate if smaller class sizes lead to better math scores. For the initial report, a two-way fixed effects ANOVA model was used but it had a lot of limitations. In this report, we explore a broader set of variables, including teacher-related factors such as career level and race to examine their potential impact on student performance. Additional factors like socioeconomic status (lunch status) and school location (urban, rural, suburban, and inner-city) will be examined as well. To select the variables, we rely on initial hypotheses, domain knowledge, and variable selection methods like backward selection. We also implement a mixed-effects model, treating school ID as a random effect while including kindergarten scores for baseline differences.
+
+
+
+
+# Introduction
+Class size has been a topic of debate for researchers and policymakers as to whether smaller class sizes lead to better outcomes. Project STAR tracked students from kindergarten through third grade and assigned them randomly to small classes, regular classes, or regular classes with a teacher’s aide. Our analysis aims to answer these questions: Do students in smaller classes achieve higher math scores? How do socioeconomic, school location, and teacher-related factors influence student performance? In this report, we refine our approach by incorporating additional variables and adopting a mixed-effects model to address limitations from the initial analysis.
+
+
+
+ 
+# Background 
+Project STAR was a large-scale, longitudinal experiment conducted in Tennessee from 1985 to 1989 to evaluate the effects of class sizes. Students were randomly assigned to one of three classroom types: (1) small classes with 13–17 students, (2) regular classes with 22–25 students, or (3) regular classes with a teacher’s aide. The nature of the experimental design ensured that each school had at least one of each class type to reduce confounding effects. Students were expected to remain in their assigned class types, but biases occurred due to noncompliance and self-selection. Despite these issues, Project STAR has still been one of the most rigorous studies. 
+
+
+# Initial Analysis
+Our initial analysis used a two-way ANOVA model with first-year math score as the outcome variable, class type as a fixed effect, and school ID as a fixed effect. However, this model is designed in a wrong way since school ID was treated wrong, which, in fact, should be modeled as a random effect. Additionally, we didn’t consider baseline performance (kindergarten scores) which eventually introduced bias by not taking into account initial differences among students. To improve our approach, we use a mixed-effects model with school ID as a random effect and add covariates such as lunch status, school location, teacher career level, and teacher race. Variable selection is carried by domain knowledge, initial hypotheses, and selection methods. 
+
+
+```{r}
+library(dplyr)
+library(knitr)
+library(sjPlot)
+library(ggplot2)
+library(tidyr)
+library(lme4)
+library(kableExtra)
+library(lmerTest)
+library(MASS)
+library(car)
+library(lmtest)
+library(emmeans)
+
+data <- read.csv("C:/Users/Chris/Documents/STA207 Initial Report/STAR_Students.csv")
+```
+
+
+
+# Descriptive analysis 
+
+## Missing Values and Imputation
+```{r}
+STAR_new <- data %>%
+  dplyr::select(g1classtype, g1tmathss, gktmathss, g1freelunch, g1surban, g1schid, g1tchid) %>%
+  filter(!is.na(g1classtype) & !is.na(g1tmathss) & !is.na(gktmathss) &
+           !is.na(g1freelunch) & !is.na(g1surban) & !is.na(g1schid) & !is.na(g1tchid))
+
+
+# Summary statistics before removing missing values
+summ_before <- data %>%
+  summarise(
+    Min = min(g1tmathss, na.rm = TRUE),
+    Q1 = quantile(g1tmathss, 0.25, na.rm = TRUE),
+    Median = median(g1tmathss, na.rm = TRUE),
+    Mean = mean(g1tmathss, na.rm = TRUE),
+    Q3 = quantile(g1tmathss, 0.75, na.rm = TRUE),
+    Max = max(g1tmathss, na.rm = TRUE),
+    Count = sum(!is.na(g1tmathss))
+  )
+
+# Summary statistics after removing missing values
+summ_after <- STAR_new %>%
+  summarise(
+    Min = min(g1tmathss, na.rm = TRUE),
+    Q1 = quantile(g1tmathss, 0.25, na.rm = TRUE),
+    Median = median(g1tmathss, na.rm = TRUE),
+    Mean = mean(g1tmathss, na.rm = TRUE),
+    Q3 = quantile(g1tmathss, 0.75, na.rm = TRUE),
+    Max = max(g1tmathss, na.rm = TRUE),
+    Count = n()
+  )
+
+# Display summary statistics
+kable(rbind(Before = summ_before, After = summ_after))
+```
+
+
+If we just simply remove missing values, we can see that around 2,500 values are removed, which is almost 38% of the total data. Even though mean, median and quartiles stay pretty much the same, the missing values might not be random. If they are related to other variables, this could introduce bias. To check if missing values are randomly distributed we check the table below
+
+
+```{r}
+table1 <- as_tibble(as.data.frame.matrix(table(is.na(data$gktmathss), data$g1schid))) %>%
+  mutate(Status = c("Non-Missing", "Missing")) %>%
+  relocate(Status)
+
+table2 <- as_tibble(as.data.frame.matrix(table(is.na(data$gktmathss), data$g1freelunch))) %>%
+  mutate(Status = c("Non-Missing", "Missing")) %>%
+  relocate(Status)
+
+cat("Table 1: Missing vs Non-Missing Values in 'gktmathss' by School ID")
+table1
+
+cat("Table 2: Missing vs Non-Missing Values in 'gktmathss' by Free Lunch Status")
+table2
+```
+
+
+Some schools have a higher percentage of missing values than others. School 169229 has 143 missing values and 95 non-missing values. Other schools, such as 201449, have more non-missing values (98) than missing ones (51). We can notice  that schools does not have a similar number of missing and non-missing values. missing data is spread across different schools, but some schools have more missing values than others.
+
+Missing rate is 43.7% for among students not receiving free lunch and it is 31.2% for among students receiving free lunch. We can see that the missing rate is higher for students not receiving free lunch compared to those receiving free lunch. This suggests that students without free lunch have more missing test scores than those with free lunch. This could imply that missing values are not completely random and might be related with other factors.
+
+In conlcusion, dropping missing values might bias results. Thus, we consider imputing the data
+
+
+```{r}
+r_table <- tibble(
+  Variable = c("g1classtype", "g1tmathss", "gktmathss", "g1freelunch", "g1surban", "g1schid", "g1tchid", "gltcareer"),
+  Count = c(
+    data %>% filter(!is.na(g1classtype)) %>% summarise(Count = n()) %>% pull(Count),
+    data %>% filter(!is.na(g1tmathss)) %>% summarise(Count = n()) %>% pull(Count),
+    data %>% filter(!is.na(gktmathss)) %>% summarise(Count = n()) %>% pull(Count),
+    data %>% filter(!is.na(g1freelunch)) %>% summarise(Count = n()) %>% pull(Count),
+    data %>% filter(!is.na(g1surban)) %>% summarise(Count = n()) %>% pull(Count),
+    data %>% filter(!is.na(g1schid)) %>% summarise(Count = n()) %>% pull(Count),
+    data %>% filter(!is.na(g1tchid)) %>% summarise(Count = n()) %>% pull(Count),
+    data %>% filter(!is.na(g1tcareer)) %>% summarise(Count = n()) %>% pull(Count)
+  )
+)
+
+r_table
+```
+
+We can see that gkmathss, the baseline math score, has the most missing values. There are several ways for imputing missing data. Here, we use the mean to replace the missing values.
+
+
+## Summary Statistics After Imputation
+```{r}
+data1 <- data %>% mutate(gktmathss = ifelse(is.na(gktmathss), mean(gktmathss, na.rm = TRUE), gktmathss))
+
+STAR_new1 <- data1 %>%
+  dplyr::select(g1classtype, g1tmathss, gktmathss, g1freelunch, g1surban, g1schid, g1tchid) %>%
+  filter(!is.na(g1classtype) & !is.na(g1tmathss) & !is.na(gktmathss) &
+           !is.na(g1freelunch) & !is.na(g1surban) & !is.na(g1schid) & !is.na(g1tchid))
+
+
+
+summ_before1 <- data1 %>%
+  summarise(
+    Min = min(g1tmathss, na.rm = TRUE),
+    Q1 = quantile(g1tmathss, 0.25, na.rm = TRUE),
+    Median = median(g1tmathss, na.rm = TRUE),
+    Mean = mean(g1tmathss, na.rm = TRUE),
+    Q3 = quantile(g1tmathss, 0.75, na.rm = TRUE),
+    Max = max(g1tmathss, na.rm = TRUE),
+    Count = sum(!is.na(g1tmathss))
+  )
+
+# Summary statistics after removing missing values
+summ_after1 <- STAR_new1 %>%
+  summarise(
+    Min = min(g1tmathss, na.rm = TRUE),
+    Q1 = quantile(g1tmathss, 0.25, na.rm = TRUE),
+    Median = median(g1tmathss, na.rm = TRUE),
+    Mean = mean(g1tmathss, na.rm = TRUE),
+    Q3 = quantile(g1tmathss, 0.75, na.rm = TRUE),
+    Max = max(g1tmathss, na.rm = TRUE),
+    Count = n()
+  )
+
+# Display summary statistics
+kable(rbind(Before = summ_before1, After = summ_after1))
+```
+
+After replacing the missing values in gktmathss with its mean, we now have 160 missing values which is a significant improvement compared to the previous one. 
+
+
+
+## Distribution of Mean Math Scores Per Teacher
+```{r}
+teacher_summ <- STAR_new1 %>%
+  group_by(g1tchid) %>%
+  summarize(
+    Mean_Math1 = mean(g1tmathss, na.rm = TRUE),
+    Median_Math1 = median(g1tmathss, na.rm = TRUE),
+    Q1_Math1 = quantile(g1tmathss, .25, na.rm = TRUE),
+    Q3_Math1 = quantile(g1tmathss, .75, na.rm = TRUE),
+    SD_Math1 = sd(g1tmathss, na.rm = TRUE),
+    Num_Std = n())
+
+ggplot(teacher_summ, aes(x = Mean_Math1)) +
+  geom_histogram(binwidth = 12, fill = "purple", color = "black") +
+  labs(title = "Distribution of Mean Math Scores",
+       x = "Mean Math Scores",
+       y = "Teachers") 
+```
+
+There might be a slight skew, but the distribution seems fairly symmetric and normal.
+
+
+
+## Relationship Between Number of Students and Mean Math Score
+```{r}
+ggplot(teacher_summ, aes(x = Num_Std, y = Mean_Math1)) +
+  geom_point(color = "blue") +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(title = "Number of Students vs. Mean Math Score",
+       x = "Number of Students per Teacher",
+       y = "Mean Math Score")
+```
+
+
+We can see that there is a slight negative trend. This suggests that as the number of students per teacher increases, the mean math score tend to decrease.
+
+
+
+## Math Score by Class Type
+```{r}
+STAR_new1 <- STAR_new1 %>%
+  mutate(g1classtype = factor(as.numeric(g1classtype), 
+                              levels = c(1, 2, 3),
+                              labels = c("Small", "Regular", "Regular+Aide")),
+         g1surban = factor(as.numeric(g1surban), 
+                           levels = c(1, 2, 3, 4),
+                           labels = c("Inner-City", "Suburban", "Rural", "Urban")))
+
+ggplot(STAR_new1, aes(x = g1classtype, y = g1tmathss, fill = g1classtype)) +
+  geom_boxplot() +
+  labs(x = "Class Type", y = "Math Score 1st Year")
+```
+
+We can see that mean math scores vary by the class types. Small class sizes have the highest median scores and the regular class sizes have the lowest median scores. Although regular class sizes with aid perform better than the regular ones, they are pretty much the same.
+
+## Math Score by School Type
+```{r}
+ggplot(STAR_new1, aes(x = g1surban, y = g1tmathss, fill = g1surban)) +
+  geom_boxplot() +
+  labs(x = "School Type", y = "Math Score 1st Year")
+```
+
+Inner-city schools have the lowest median math scores and rural schools have the highest mean math scores. Suburban and Urban have similar median scores. Rural schools seems to have a higher median but are not drastically different from suburban or urban schools.
+
+## Box Plot of Math Score by School ID
+```{r}
+ggplot(STAR_new1, aes(x = factor(g1schid), y = g1tmathss)) +
+  geom_boxplot(fill = "violet", color = "purple") +
+  labs(x = "School ID", y = "Math Score", title = "Math Scores by School ID") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+We can tell that there are variation across schools. Some schools have higher median scores, while others have lower scores. The range of scores also varies significantly across schools, with some showing wider variability and others showing narrower variability.
+
+
+## Additional Analyses on Race, and Gender
+```{r}
+data11 <- data %>% mutate(gktmathss = ifelse(is.na(gktmathss), mean(gktmathss, na.rm = TRUE), gktmathss))
+
+STAR_new3 <- data11 %>%
+  dplyr::select(g1classtype, g1tmathss, gktmathss, gender, race, g1tcareer, g1schid, g1tchid) %>%
+  filter(!is.na(g1classtype) & !is.na(g1tmathss) & !is.na(gktmathss) &
+           !is.na(gender) & !is.na(race) & !is.na(g1tcareer) & !is.na(g1schid) & !is.na(g1tchid))
+
+
+STAR_new3 <- STAR_new3 %>%
+  mutate(g1classtype = factor(as.numeric(g1classtype), 
+                              levels = c(1, 2, 3),
+                              labels = c("Small", "Regular", "Regular+Aide")),
+         gender = factor(as.numeric(gender), 
+                         levels = c(1, 2),
+                         labels = c("Male", "Female")),
+         race = factor(as.numeric(race), 
+                       levels = c(1, 2, 3, 4, 5, 6),
+                       labels = c("White", "Black","Asian","Hispanic","Native American" , "Other")),
+         g1tcareer = factor(as.numeric(g1tcareer)))
+
+
+# Boxplot for Gender vs Math Score
+ggplot(STAR_new3, aes(x = gender, y = g1tmathss, fill = gender)) +
+  geom_boxplot() +
+  labs(x = "Gender", y = "1st Year Math Score", title = "Math Score by Gender")
+```
+
+The overall scores for both genders seem quite similar. The median scores for males and females are close, which suggests that there is no significant difference.
+
+
+
+
+```{r}
+# Boxplot for Race vs Math Score
+ggplot(STAR_new3, aes(x = race, y = g1tmathss, fill = race)) +
+  geom_boxplot() +
+  labs(x = "Race", y = "1st Year Math Score", title = "Math Score by Race")
+
+```
+
+
+Asian students have the highest median, suggesting they tend to score better in math compared to other groups. White and Hispanic students have similar median scores, but Hispanic students show slightly more variability. Black and Native American students have the lowest median scores. In conclusion, we can say that some racial groups tend to have higher scores on average.
+
+
+```{r}
+table(data11$race)
+```
+
+However, the distribution of the race variable is highly imbalanced. White and Black studnets take up the majority of the data and other groups have very few observations. Due to this imbalance, the race variable is not suitable for understanding performance differences across racial groups.
+
+
+
+# Inferential analysis
+
+## Selecting Variables Using the Step Funcion 
+
+We will use a variable selection method to select significant predictors. Our baseline model includes only class type as a fixed effect and school ID as a random effect. For the full model, we add multiple predictors analyzed in the descriptive section to evaluate if they contribute to explaining math scores.
+
+```{r}
+# Baseline model: only class type and school random effect
+model_base <- lmer(g1tmathss ~ factor(g1classtype) + (1 | g1schid), data = data11)
+model_full <- lmer(g1tmathss ~ factor(g1classtype) + (1 | g1schid) + 
+                     factor(g1freelunch) + factor(g1surban) + gktmathss +
+                     factor(gender) + birthyear + gktreadss + 
+                     factor(g1tchid) + 
+                     factor(g1tcareer) + factor(g1trace), 
+                   data = data11)
+
+
+drop1(model_full, test = "Chisq")
+```
+
+From the result, birthyear and g1freelunch have high p-values. Additionally, there are missing p-values for g1classtype, g1surban,and gltcareer, gltrace. This implies either one of them below:
+
+Collinearity: Some predictors are highly correlated
+
+Sparse data: Some categories have low sample sizes
+
+Redundancy: Some factors add no information
+
+Thus, I first dropped variables that were not statistically significant (birthyear and g1freelunch) and then manually removed variables one at a time to address the issue of missing p-values. 
+
+
+```{r}
+model_reduced <- lmer(g1tmathss ~ factor(g1classtype) + (1 | g1schid) + 
+                        gktmathss + factor(gender) + 
+                        gktreadss + g4langexpss + factor(g1tcareer), 
+                      data = data11)
+
+drop1(model_reduced, test = "Chisq")
+```
+
+
+Through this process, I found that g1classtype, g1schid, gktmathss, gender, gktreadss, and g1tcareer did not contribute to the issue. Based on these variables, we applied the backward selection method and found that all variables were selected (except for g1schid) and statistically significant.
+
+
+
+```{r}
+vif(lm(g1tmathss ~ factor(g1classtype) + gktmathss + factor(gender) + 
+         gktreadss + g4langexpss + factor(g1tcareer), data = data11))
+```
+
+The VIF results indicate that the predictors are not correlated with each other. Based on this, the final model is below:
+
+
+\setlength{\mathindent}{0pt}
+
+\begin{align*}
+Y_m &= \mu + \alpha_i + \beta_j + \gamma_k + \delta_l + \lambda_1 X_{m1} + \lambda_2 X_{m2} + \epsilon_m,
+\end{align*}
+
+where:
+
+\begin{align*}
+Y_m &\text{ is the first-year math score for the } m \text{-th student.} \\
+\mu &\text{ is the overall mean.} \\
+\alpha_i &\text{ is the fixed effect of the } i \text{-th class type } (i = 1,2,3). \\
+\beta_j &\text{ is the random effect of the } j \text{-th school } (j = 1, \dots, J). \\
+\gamma_k &\text{ is the fixed effect of the } k \text{-th gender } (k = 1,2). \\
+\delta_l &\text{ is the fixed effect of the } l \text{-th teacher career level } (l = 1,2,3,4,5,6). \\
+X_{m1} &\text{ is the kindergarten math score } (\text{gktmathss}), \text{ with coefficient } \lambda_1. \\
+X_{m2} &\text{ is the kindergarten reading score } (\text{gktreadss}), \text{ with coefficient } \lambda_2. \\
+\epsilon_m &\sim N(0, \sigma^2) \text{ is the residual error term.} \\
+\beta_j &\sim N(0, \sigma^2_{\beta})
+\end{align*}
+
+\section*{Model Assumptions}
+
+
+Independence: The fixed effects, random effects, and residuals are assumed to be independent of each other.
+
+Linear Relationship: The continuous predictors \( X_{m1} \) and \( X_{m2} \) have a linear effect on \( Y_m \).
+
+No Interaction: This model assumes that there are no interaction effects between predictors.
+
+
+When using lmer from the lme4 package in R, constraints on the fixed effects are automatically applied and uses treatment contrasts. That is why I didn't mention sum-to-zero constraints. If needed, one can change it to sum-to-zero constraints:
+
+\[
+\sum_i \alpha_i = 0, \quad \sum_k \gamma_k = 0, \quad \sum_l \delta_l = 0.
+\]
+
+
+## Summary of the Final Model
+```{r}
+
+final <- lmer(g1tmathss ~ factor(g1classtype) + (1 | g1schid) + gktmathss + factor(gender)+ gktreadss  + factor(g1tcareer), data = data11)
+
+tab_model(final, show.se = TRUE, show.stat = TRUE, show.ci = FALSE)
+```
+
+
+
+
+
+1. Effect of Regular & Regular+Aide Classes (Compared to Small Classes):
+
+From the summary, we can see that students in regular classes scored 6.39 points lower on average than those in small classes and students in regular+aide classes scored 4.94 points lower than those in small classes. This suggests that small class sizes had a positive relation with math scores. 
+
+2. Effect of Prior Ability (gktmathss & gktreadss):
+
+Each additional unit in base math scores was associated with a 0.44 point increase in first-grade math scores, suggesting the importance of early math ability. Also, one unit increase in base reading scores was associated with a 0.30 point increase in first-grade math scores.
+
+3. Effect of Gender:
+
+Females score 2.05 points lower than males, meaning that gender difference exists.
+
+4. Impact of Teacher Career (g1tcareer):
+
+Teachers with more experience tend to have students with higher math scores. Categories 3, 4, 5, and 6 show statistically significant positive effects compared to the least experienced group. One of the most experienced teachers group (category 5) have the largest positive effect (15.48), implying that students benefit significantly from having teachers with a lot of experience.
+
+5. Random Effects (School-Level Variance):
+
+School-level variance is 301.55 and Student-level variance is 892.46. Intraclass Correlation (ICC) is 0.25, which means schools explain 25% of the total variance in math scores. The remaining 75% of the variance is explained by fixed effects and residual error.
+
+6. Model Fit (R²):
+
+The Marginal R² is 0.398, meaning that our predictors alone explain 39.8% of the variance in math scores. The Conditional R² is 0.550, meaning that when school-level effects are included, the model explains 55% of the variance. We can say that fixed effects explain a substantial amount of the variance.
+
+In conclusion,
+
+Small classes improve math scores significantly compared to regular and Regular with aid classes.
+
+Base math and reading scores are strong predictors of later performance.
+
+Gender difference exists.
+
+Teaching experience is associated with high student scores.
+
+
+## Tukey's Range Test for Categorical Variables
+```{r}
+# Tukey test for class type
+tuckey1 <- emmeans(final, pairwise ~ g1classtype, adjust = "tukey")
+plot(tuckey1, main = "Estimated Means for Class Type",
+     ylab = "Class Type", xlab = "Estimated Math Score", col = "red")
+
+tuckey1
+```
+
+
+1. Tukey test for class type
+
+Small class group has the highest estimated mean score (538), while the regular class has the lowest (532). The regular+aid group is slightly better than regular (533), but lower than small group. In conclusion, Small classes perform much better than the rest of the classes and having an aide in a regular class does not improve scores as much as reducing class size.
+
+
+```{r}
+# Tukey test for teacher career
+tuckey2 <- emmeans(final, pairwise ~ g1tcareer, adjust = "tukey")
+plot(tuckey2, main = "Estimated Means for Teaching Career",
+     ylab = "Career Level", xlab = "Estimated Math Score", col = "red")
+
+tuckey2
+```
+
+
+2. Tukey test for teacher career
+
+From the p-value, we can tell that students of teachers in level 4, 5, and 6 score significantly higher than those in level 1. However, most of the other comparisons are not significant which means we can't say that small differences are meaningful. In conclusion, higher career levels are connected with better student performance, but not all differences are significant.
+
+
+```{r}
+# Tukey test for gender
+tuckey3 <- emmeans(final, pairwise ~ gender, adjust = "tukey")
+plot(tuckey3, main = "Estimated Means for Teaching Career",
+     ylab = "Gender", xlab = "Estimated Math Score", col = "red")
+
+tuckey3
+```
+
+
+3. Tukey test for gender
+
+The difference between males and females is 2.05 points and is statistically significant. This suggests that males scored slightly higher on average than females, but the difference is small. 
+
+
+# Sensitivity analysis 
+
+## Histogram of residuals
+```{r}
+resid <- residuals(final)
+ggplot(data.frame(residuals = resid), aes(x = residuals)) +
+  geom_histogram(binwidth = 12, color = "black", fill = "violet") +
+  theme_minimal() +
+  ggtitle("Histogram of Residuals")
+```
+
+The histogram of residuals tells us that the residuals are approximately normally distributed.
+
+
+## Q-Q Plot
+```{r}
+qqnorm(resid)
+qqline(resid, col = "red")
+```
+
+Most of the points are on the red line, saying that the data is apporximately normal. There is a slight deviation at the both tails. Data seems to be mostly normal, with mild skewness.
+
+
+
+```{r}
+plot(fitted(final), resid, 
+     ylab = "Residuals", 
+     main = "Residuals vs Fitted Values")
+abline(h = 0, col = "red")
+```
+
+The residuals seem to be randomly scattered, not showing any pattern. It suggests the assumption of equal variance holds,
+
+
+
+# Discussion 
+Our analysis provides strong evidence that smaller class sizes positively impact student math performance. Students in regular and regular-aide classes scored significantly lower than those in small classes, supporting the argument for reduced class sizes in education.
+
+Beyond class size, prior academic ability plays a crucial role in student outcomes. Higher kindergarten math and reading scores were positively associated with better math performance, emphasizing the importance of early skill development. Additionally, we observed a gender gap, with female students scoring lower than males on average. While the reason behind this difference is out of the scope of this study, it suggests a potential area for further investigation. Teacher career is also a significant factor, with students of more experienced teachers achieving higher scores. This suggests the value of investing in teacher development.
+
+Overall, our findings reinforce the importance of class size reduction, early skill development, and experienced teachers in improving student outcomes. 
+
+However, while we used domain knowledge and selection methods, the dataset contains 379 variables, and our model likely does not capture all relevant predictors. There may be additional promising variables that could enhance the model’s performance and provide deeper insights. Future research should explore a broader set of variables and consider interaction terms to identify the most influential factors affecting student performance.
+
+Additionally, project STAR was designed as a randomized experiment, but issues such as self-selection and noncompliance arose because some students and teachers did not stay in their assigned groups. These factors introduce potential biases and confounding effects in estimating class size impacts. To address this, future research could use Propensity Score Matching (PSM) to balance observed covariates across groups. PSM could provide a more robust understanding of how classroom setting influences student performance.
+
+
+
+
+# Acknowledgement {-}
+
+
+
+
+# Reference {-}
+Most of the references are from STA207 materials
+
+For tibble package: https://cran.r-project.org/web/packages/tibble/tibble.pdf
+
+For lmer package: https://cran.r-project.org/web/packages/lme4/vignettes/lmer.pdf
+
+For emmeans package: https://cran.r-project.org/web/packages/emmeans/emmeans.pdf
+
+For propensity score: https://nbviewer.org/github/ChenShizhe/StatDataScience/blob/master/Notes/Chapter9Causal.ipynb
+
+
+
+# Github Repository Link {-}
+https://github.com/Terryius/STAR207-Final-Project-
+
+
+# Appendix {-}
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+
+```
+
+
+
+
+# Session info {-}
+
+
+
+```{r}
+sessionInfo()
+```
